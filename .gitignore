@@ -1,0 +1,49 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+
+# EDA / simulation artifacts
+*.log
+*.jou
+*.str
+*.wdb
+*.wcfg
+*.vcd
+*.fsdb
+*.trn
+*.pb
+*.dcp
+*.xpr
+*.runs/
+*.cache/
+*.sim/
+*.hw/
+*.ip_user_files/
+
+# Generated outputs
+reports/
+out/
+build/
+work/
+
+# Temporary data exports
+*.npy
+*.npz
+*.mem
+
+# Coverage and UVM transient
+coverage/
+*.ucdb
+*.vdb
+

@@ -46,4 +46,4 @@ work/
 coverage/
 *.ucdb
 *.vdb
-
+dv/uvm/cover_sum/

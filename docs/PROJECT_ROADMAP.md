@@ -2,6 +2,8 @@
 
 > 目标：将当前“固定形状 GEMM 算子核”演进为“可编程 NPU 核”，并形成可复现的性能与瓶颈理论分析。
 
+> 执行记录主看板见：[TPU_EXECUTION_PLAN.md](/home/yian/Prj/TPU/docs/TPU_EXECUTION_PLAN.md:1)
+
 ## 0. 当前状态（Baseline）
 
 - 控制面：配置寄存器 + 固定状态机（非指令流）

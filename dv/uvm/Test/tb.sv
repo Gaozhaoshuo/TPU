@@ -28,9 +28,9 @@ interface axi_master_intf(input bit ACLK, input bit ARESETn);
   logic                           AWVALID;
   logic                           AWREADY;
   logic  [AXI_ADDR_WIDTH-1:0]     AWADDR;
-  logic  [7:0]                    AWLEN;   // 不固定
-  logic  [2:0]                    AWSIZE;//固定为111->1024bits
-  logic  [1:0]                    AWBURST;//固定为地址增01;
+  logic  [7:0]                    AWLEN;   // 由 DUT 输出的 AWLEN
+  logic  [2:0]                    AWSIZE;  // 当前 DUT 固定为 3'b101，对应 32 bytes / 256 bits
+  logic  [1:0]                    AWBURST; // 当前 DUT 固定为 INCR(2'b01)
     
   // AXI 写数据通道
   logic                       WVALID;
@@ -43,8 +43,8 @@ interface axi_master_intf(input bit ACLK, input bit ARESETn);
   logic                           BREADY;
   logic  [1:0]                    BRESP;
 
-  logic                           tpu_done;//tpu运算完
-  logic                           send_done;//maseter发送完数据
+  logic                           tpu_done; // 计算完成脉冲
+  logic                           send_done; // 写回完成脉冲
   logic [2:0]                     result_matrix_type;
   /*modport master(
     input  clk, rst_n, awready, wready, bresp, bvalid, arready, rdata, rresp, rvalid,

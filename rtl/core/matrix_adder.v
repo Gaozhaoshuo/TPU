@@ -35,13 +35,7 @@ localparam INT8_MODE = 3'b001;
 localparam FP16_MODE = 3'b010;
 localparam FP32_MODE = 3'b011;
 
-// Matrix type definitions
-localparam m16n16k16 = 3'b001;
-localparam m32n8k16  = 3'b010;
-localparam m8n32k16  = 3'b100;
-
 localparam ROW_COUNT_MAX  = 32; // Maximum number of output rows
-localparam ROWS_PER_GROUP = 8;  // Number of rows per group
 
 // Valid signal
 wire data_valid;
@@ -118,6 +112,22 @@ endgenerate
 // Internal registers
 reg [SRAM_ADDR_WIDTH-1:0] row_counter;  // Row processing counter
 reg                       sum_valid_d;  // Delayed sum_valid for detecting falling edge
+wire [SRAM_ADDR_WIDTH-1:0] mapped_write_addr;
+wire [1:0]                 mapped_high_low_sel;
+wire [2:0]                 unused_bursts_per_row;
+wire [5:0]                 unused_max_rows;
+
+legacy_shape_mapper #(
+    .SRAM_ADDR_WIDTH(SRAM_ADDR_WIDTH),
+    .ROW_INDEX_WIDTH(SRAM_ADDR_WIDTH + 1)
+) u_legacy_shape_mapper (
+    .mtype_sel(mtype_sel),
+    .logical_row_idx({1'b0, row_counter}),
+    .mapped_addr(mapped_write_addr),
+    .seg_sel(mapped_high_low_sel),
+    .bursts_per_row(unused_bursts_per_row),
+    .max_rows(unused_max_rows)
+);
 
 // Output logic and write-back address generation
 always @(posedge clk or negedge rst_n) begin
@@ -151,57 +161,9 @@ always @(posedge clk or negedge rst_n) begin
             compute_done <= 1'b0;
         end
 
-        // Write-back address generation
-        case (mtype_sel)
-            m16n16k16: begin
-                if (row_counter < ROWS_PER_GROUP) begin
-                    // A0xB0 write-back address 0~7, bits 0~255
-                    write_addr   <= row_counter;
-                    high_low_sel <= 2'b00;
-                end else if (row_counter < 2 * ROWS_PER_GROUP) begin
-                    // A0xB1 write-back address 0~7, bits 256~511
-                    write_addr   <= row_counter - ROWS_PER_GROUP;
-                    high_low_sel <= 2'b01;
-                end else if (row_counter < 3 * ROWS_PER_GROUP) begin
-                    // A1xB0 write-back address 8~15, bits 0~255
-                    write_addr   <= row_counter - ROWS_PER_GROUP;
-                    high_low_sel <= 2'b00;
-                end else if (row_counter < 4 * ROWS_PER_GROUP) begin
-                    // A1xB1 write-back address 8~15, bits 256~511
-                    write_addr   <= row_counter - 2 * ROWS_PER_GROUP;
-                    high_low_sel <= 2'b01;
-                end else begin
-                    write_addr   <= 0;
-                    high_low_sel <= 2'b00;
-                end
-            end
-            m32n8k16: begin
-                write_addr   <= row_counter;
-                high_low_sel <= 2'b00;
-            end
-            m8n32k16: begin
-                write_addr <= row_counter & 5'b00111;  // row_counter % 8
-                if (row_counter < ROWS_PER_GROUP) begin
-                    // AxB0 write-back address 0~7, bits 0~255
-                    high_low_sel <= 2'b00;
-                end else if (row_counter < 2 * ROWS_PER_GROUP) begin
-                    // AxB1 write-back address 0~7, bits 256~511
-                    high_low_sel <= 2'b01;
-                end else if (row_counter < 3 * ROWS_PER_GROUP) begin
-                    // AxB2 write-back address 0~7, bits 512~767
-                    high_low_sel <= 2'b10;
-                end else if (row_counter < 4 * ROWS_PER_GROUP) begin
-                    // AxB3 write-back address 0~7, bits 768~1023
-                    high_low_sel <= 2'b11;
-                end else begin
-                    high_low_sel <= 2'b00;
-                end
-            end
-            default: begin
-                write_addr   <= 'd0;
-                high_low_sel <= 2'b00;
-            end
-        endcase
+        // Shared legacy mapper keeps the SRAM-D packing rule in one place.
+        write_addr   <= mapped_write_addr;
+        high_low_sel <= mapped_high_low_sel;
     end
 end
 

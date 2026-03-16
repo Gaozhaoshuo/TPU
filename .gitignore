@@ -30,6 +30,8 @@ __pycache__/
 *.sim/
 *.hw/
 *.ip_user_files/
+ucli.key
+csrc/
 
 # Generated outputs
 reports/

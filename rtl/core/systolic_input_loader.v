@@ -8,10 +8,9 @@ module systolic_input_loader #(
     input  wire                              clk,                      // Clock signal
     input  wire                              rst_n,                    // Reset signal, active low
 
-    // Start signals for loading systolic input
-    input  wire [3:0]                        load_systolic_input_start_m16n16k16,
-    input  wire [3:0]                        load_systolic_input_start_m32n8k16,
-    input  wire [3:0]                        load_systolic_input_start_m8n32k16,
+    // Start signal for loading one legacy phase
+    input  wire [2:0]                        mtype_sel,
+    input  wire [3:0]                        load_systolic_input_start,
 
     // SRAM address outputs
     output reg  [SRAM_ADDR_WIDTH-1:0]        read_srama_addr,          // Read address for SRAMA
@@ -23,34 +22,36 @@ module systolic_input_loader #(
 );
 
 // State definitions
-localparam IDLE        = 5'd0;  // Idle state
-
-localparam m16n16k16_LOAD_A0_B0 = 5'd1;  // Load state for m16n16k16 (block A0, B0)
-localparam m16n16k16_LOAD_A0_B1 = 5'd2;  // Load state for m16n16k16 (block A0, B1)
-localparam m16n16k16_LOAD_A1_B0 = 5'd3;  // Load state for m16n16k16 (block A1, B0)
-localparam m16n16k16_LOAD_A1_B1 = 5'd4;  // Load state for m16n16k16 (block A1, B1)
-
-localparam m32n8k16_LOAD_A0_B   = 5'd5;  // Load state for m32n8k16 (block A0)
-localparam m32n8k16_LOAD_A1_B   = 5'd6;  // Load state for m32n8k16 (block A1)
-localparam m32n8k16_LOAD_A2_B   = 5'd7;  // Load state for m32n8k16 (block A2)
-localparam m32n8k16_LOAD_A3_B   = 5'd8;  // Load state for m32n8k16 (block A3)
-
-localparam m8n32k16_LOAD_A_B0   = 5'd9;  // Load state for m8n32k16 (block B0)
-localparam m8n32k16_LOAD_A_B1   = 5'd10; // Load state for m8n32k16 (block B1)
-localparam m8n32k16_LOAD_A_B2   = 5'd11; // Load state for m8n32k16 (block B2)
-localparam m8n32k16_LOAD_A_B3   = 5'd12; // Load state for m8n32k16 (block B3)
-
-localparam WAIT_DELAY1 = 5'd13; // Delay state 1
-localparam WAIT_DELAY2 = 5'd14; // Delay state 2
-localparam WAIT_DELAY3 = 5'd15; // Delay state 3
-localparam DONE        = 5'd16; // Done state
+localparam IDLE        = 4'd0;  // Idle state
+localparam LOAD_PHASE0 = 4'd1;
+localparam LOAD_PHASE1 = 4'd2;
+localparam LOAD_PHASE2 = 4'd3;
+localparam LOAD_PHASE3 = 4'd4;
+localparam WAIT_DELAY1 = 4'd5; // Delay state 1
+localparam WAIT_DELAY2 = 4'd6; // Delay state 2
+localparam WAIT_DELAY3 = 4'd7; // Delay state 3
+localparam DONE        = 4'd8; // Done state
 
 localparam BLOCK_ADDR_OFFSET = 4'd8; // Block address offset for SRAM addressing
 
 // Internal signals
-reg [4:0] current_state;        // Current state of the FSM
-reg [4:0] next_state;           // Next state of the FSM
+reg [3:0] current_state;        // Current state of the FSM
+reg [3:0] next_state;           // Next state of the FSM
 reg [5:0] counter;              // Counter for loading cycles
+wire [1:0] active_phase_idx;
+wire [1:0] a_block_idx;
+wire [1:0] b_block_idx;
+wire       phase_cfg_valid;
+
+assign active_phase_idx = current_state - LOAD_PHASE0;
+
+legacy_tile_phase_mapper u_legacy_tile_phase_mapper (
+    .mtype_sel(mtype_sel),
+    .phase_idx(active_phase_idx),
+    .a_block_idx(a_block_idx),
+    .b_block_idx(b_block_idx),
+    .phase_valid(phase_cfg_valid)
+);
 
 // State transition logic
 always @(posedge clk or negedge rst_n) begin
@@ -65,104 +66,19 @@ end
 always @(*) begin
     case (current_state)
         IDLE: begin
-            case (1'b1) // Priority-based selection of start signals
-                load_systolic_input_start_m16n16k16[0]: next_state = m16n16k16_LOAD_A0_B0;
-                load_systolic_input_start_m16n16k16[1]: next_state = m16n16k16_LOAD_A0_B1;
-                load_systolic_input_start_m16n16k16[2]: next_state = m16n16k16_LOAD_A1_B0;
-                load_systolic_input_start_m16n16k16[3]: next_state = m16n16k16_LOAD_A1_B1;
-                load_systolic_input_start_m32n8k16[0]:  next_state = m32n8k16_LOAD_A0_B;
-                load_systolic_input_start_m32n8k16[1]:  next_state = m32n8k16_LOAD_A1_B;
-                load_systolic_input_start_m32n8k16[2]:  next_state = m32n8k16_LOAD_A2_B;
-                load_systolic_input_start_m32n8k16[3]:  next_state = m32n8k16_LOAD_A3_B;
-                load_systolic_input_start_m8n32k16[0]:  next_state = m8n32k16_LOAD_A_B0;
-                load_systolic_input_start_m8n32k16[1]:  next_state = m8n32k16_LOAD_A_B1;
-                load_systolic_input_start_m8n32k16[2]:  next_state = m8n32k16_LOAD_A_B2;
-                load_systolic_input_start_m8n32k16[3]:  next_state = m8n32k16_LOAD_A_B3;
+            case (1'b1) // Priority-based selection of phase start
+                load_systolic_input_start[0]: next_state = LOAD_PHASE0;
+                load_systolic_input_start[1]: next_state = LOAD_PHASE1;
+                load_systolic_input_start[2]: next_state = LOAD_PHASE2;
+                load_systolic_input_start[3]: next_state = LOAD_PHASE3;
                 default: next_state = IDLE;
             endcase
         end
-        m16n16k16_LOAD_A0_B0: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;  // Move to delay state after loading
-            end else begin
-                next_state = m16n16k16_LOAD_A0_B0;  // Continue loading
-            end
-        end
-        m16n16k16_LOAD_A0_B1: begin
+        LOAD_PHASE0, LOAD_PHASE1, LOAD_PHASE2, LOAD_PHASE3: begin
             if (counter == SYS_ARRAY_SIZE - 1) begin
                 next_state = WAIT_DELAY1;
             end else begin
-                next_state = m16n16k16_LOAD_A0_B1;
-            end
-        end
-        m16n16k16_LOAD_A1_B0: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m16n16k16_LOAD_A1_B0;
-            end
-        end
-        m16n16k16_LOAD_A1_B1: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m16n16k16_LOAD_A1_B1;
-            end
-        end
-        m32n8k16_LOAD_A0_B: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m32n8k16_LOAD_A0_B;
-            end
-        end
-        m32n8k16_LOAD_A1_B: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m32n8k16_LOAD_A1_B;
-            end
-        end
-        m32n8k16_LOAD_A2_B: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m32n8k16_LOAD_A2_B;
-            end
-        end
-        m32n8k16_LOAD_A3_B: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m32n8k16_LOAD_A3_B;
-            end
-        end
-        m8n32k16_LOAD_A_B0: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m8n32k16_LOAD_A_B0;
-            end
-        end
-        m8n32k16_LOAD_A_B1: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m8n32k16_LOAD_A_B1;
-            end
-        end
-        m8n32k16_LOAD_A_B2: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m8n32k16_LOAD_A_B2;
-            end
-        end
-        m8n32k16_LOAD_A_B3: begin
-            if (counter == SYS_ARRAY_SIZE - 1) begin
-                next_state = WAIT_DELAY1;
-            end else begin
-                next_state = m8n32k16_LOAD_A_B3;
+                next_state = current_state;
             end
         end
         WAIT_DELAY1: begin
@@ -191,133 +107,11 @@ always @(posedge clk or negedge rst_n) begin
         read_sramb_addr <= 'd0;            // Reset SRAMB address
     end else begin
         case (current_state)
-            m16n16k16_LOAD_A0_B0: begin
-                if (counter < SYS_ARRAY_SIZE) begin
+            LOAD_PHASE0, LOAD_PHASE1, LOAD_PHASE2, LOAD_PHASE3: begin
+                if (counter < SYS_ARRAY_SIZE && phase_cfg_valid) begin
                     counter         <= counter + 1;
-                    read_srama_addr <= counter;                // Update SRAMA address
-                    read_sramb_addr <= counter;                // Update SRAMB address
-                end else begin
-                    counter         <= 'd0;                    // Reset counter
-                    read_srama_addr <= 'd0;                    // Reset address
-                    read_sramb_addr <= 'd0;                    // Reset address
-                end
-            end
-            m16n16k16_LOAD_A0_B1: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter;                // Update SRAMA address
-                    read_sramb_addr <= counter + BLOCK_ADDR_OFFSET; // Offset SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m16n16k16_LOAD_A1_B0: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter + BLOCK_ADDR_OFFSET; // Offset SRAMA address
-                    read_sramb_addr <= counter;                // Update SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m16n16k16_LOAD_A1_B1: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter + BLOCK_ADDR_OFFSET; // Offset SRAMA address
-                    read_sramb_addr <= counter + BLOCK_ADDR_OFFSET; // Offset SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m32n8k16_LOAD_A0_B: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter;                // Update SRAMA address
-                    read_sramb_addr <= counter;                // Update SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m32n8k16_LOAD_A1_B: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter + BLOCK_ADDR_OFFSET; // Offset SRAMA address
-                    read_sramb_addr <= counter;                // Update SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m32n8k16_LOAD_A2_B: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter + 2*BLOCK_ADDR_OFFSET; // Offset SRAMA address
-                    read_sramb_addr <= counter;                // Update SRAMB address
-                end else 
-                    begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m32n8k16_LOAD_A3_B: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter + 3*BLOCK_ADDR_OFFSET; // Offset SRAMA address
-                    read_sramb_addr <= counter;                // Update SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m8n32k16_LOAD_A_B0: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter;                // Update SRAMA address
-                    read_sramb_addr <= counter;                // Update SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m8n32k16_LOAD_A_B1: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter;                // Update SRAMA address
-                    read_sramb_addr <= counter + BLOCK_ADDR_OFFSET; // Offset SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m8n32k16_LOAD_A_B2: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter;                // Update SRAMA address
-                    read_sramb_addr <= counter + 2*BLOCK_ADDR_OFFSET; // Offset SRAMB address
-                end else begin
-                    counter         <= 'd0;
-                    read_srama_addr <= 'd0;
-                    read_sramb_addr <= 'd0;
-                end
-            end
-            m8n32k16_LOAD_A_B3: begin
-                if (counter < SYS_ARRAY_SIZE) begin
-                    counter         <= counter + 1;
-                    read_srama_addr <= counter;                // Update SRAMA address
-                    read_sramb_addr <= counter + 3*BLOCK_ADDR_OFFSET; // Offset SRAMB address
+                    read_srama_addr <= counter + (a_block_idx * BLOCK_ADDR_OFFSET);
+                    read_sramb_addr <= counter + (b_block_idx * BLOCK_ADDR_OFFSET);
                 end else begin
                     counter         <= 'd0;
                     read_srama_addr <= 'd0;
@@ -350,12 +144,7 @@ always @(posedge clk or negedge rst_n) begin
         load_en_col <= 'd0;         // Reset column load enable
     end else begin
         case (current_state)
-            m16n16k16_LOAD_A0_B0, m16n16k16_LOAD_A0_B1,
-            m16n16k16_LOAD_A1_B0, m16n16k16_LOAD_A1_B1,
-            m32n8k16_LOAD_A0_B, m32n8k16_LOAD_A1_B,
-            m32n8k16_LOAD_A2_B, m32n8k16_LOAD_A3_B,
-            m8n32k16_LOAD_A_B0, m8n32k16_LOAD_A_B1,
-            m8n32k16_LOAD_A_B2, m8n32k16_LOAD_A_B3,
+            LOAD_PHASE0, LOAD_PHASE1, LOAD_PHASE2, LOAD_PHASE3,
             WAIT_DELAY1: begin
             load_en_row <= (1 << counter - 1);  // counter - 1等待数据信号延迟
             load_en_col <= (1 << counter - 1);  

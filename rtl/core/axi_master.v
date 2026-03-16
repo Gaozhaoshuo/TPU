@@ -14,7 +14,7 @@ module axi_master #(
          output reg                      m_awvalid,
          input                           m_awready,
          output reg [$clog2(DEPTH_SRAM)-1:0] m_awaddr,
-         output reg [7:0]                m_awlen,   // Burst length (fixed 32 transfers)
+         output reg [7:0]                m_awlen,   // AXI AWLEN value, driven by axi_lens
          output reg [2:0]                m_awsize,  // Size: 101 = 32 bytes (256 bits)
          output reg [1:0]                m_awburst, // Burst type: 01 = INCR
 
@@ -34,11 +34,11 @@ module axi_master #(
          input  [MAX_DATA_SIZE*DATA_WIDTH-1:0] sram_d_data_out, // 1024-bit SRAM data
 
          // Control signals
-         input                           send_start,       // Start write request
-         input  [$clog2(DEPTH_SRAM)-1:0] axi_target_addr, // AXI target write address
-         input  [7:0]                    axi_lens,        // Unused (fixed 32 transfers)
+         input                           send_start,       // One-cycle pulse to start AXI write-back
+         input  [$clog2(DEPTH_SRAM)-1:0] axi_target_addr, // AXI burst start address
+         input  [7:0]                    axi_lens,        // AXI AWLEN configuration input
          input  [2:0]                    mtype_sel,       // Matrix type
-         output reg                      send_done        // Write completion flag
+         output reg                      send_done        // One-cycle pulse when AXI response handshake completes
        );
 
 // Matrix types
@@ -64,6 +64,23 @@ reg [MAX_DATA_SIZE*DATA_WIDTH-1:0] data_buffer; // 1024-bit data buffer
 reg [2:0] bursts_per_row;         // AXI transfers per SRAM row
 reg [5:0] row_count;              // SRAM row counter (0 to 31)
 reg [5:0] max_rows;               // Max rows (8, 16, or 32)
+wire      current_transfer_is_last;
+wire [2:0]                    shape_bursts_per_row;
+wire [5:0]                    shape_max_rows;
+
+assign current_transfer_is_last = (burst_cnt == axi_lens);
+
+legacy_shape_mapper #(
+  .SRAM_ADDR_WIDTH($clog2(DEPTH_SRAM)),
+  .ROW_INDEX_WIDTH(6)
+) u_legacy_shape_mapper (
+  .mtype_sel(mtype_sel),
+  .logical_row_idx(row_count),
+  .mapped_addr(),
+  .seg_sel(),
+  .bursts_per_row(shape_bursts_per_row),
+  .max_rows(shape_max_rows)
+);
 
 // State transition
 always @(posedge aclk or negedge aresetn)
@@ -97,7 +114,7 @@ always @(*)
         begin
           if (m_wvalid && m_wready)
             begin
-              if (m_wlast && split_count == bursts_per_row - 1)
+              if (current_transfer_is_last && split_count == bursts_per_row - 1)
                 next_state = WAIT_B;
               else if (split_count == bursts_per_row - 1)
                 next_state = READ_SRAM;  // 完成当前行后，发下一行数据（需采样新的SRAM数据）
@@ -123,28 +140,8 @@ always @(posedge aclk or negedge aresetn)
       end
     else if (state == IDLE && send_start)
       begin
-        case (mtype_sel)
-          M16N16K16:
-            begin
-              bursts_per_row <= 2;   // 每行2次传输：低256和高256 bits（共512bits）
-              max_rows       <= 16;
-            end
-          M32N8K16:
-            begin
-              bursts_per_row <= 1;   // 每行仅1次传输：取低256bits
-              max_rows       <= 32;
-            end
-          M8N32K16:
-            begin
-              bursts_per_row <= 4;   // 每行4次传输：整行1024bits
-              max_rows       <= 8;
-            end
-          default:
-            begin
-              bursts_per_row <= 1;
-              max_rows       <= 16;
-            end
-        endcase
+        bursts_per_row <= shape_bursts_per_row;
+        max_rows       <= shape_max_rows;
       end
   end
 
@@ -200,7 +197,7 @@ always @(posedge aclk or negedge aresetn)
             begin
               m_awvalid <= 1'b1;
               m_awaddr <= axi_target_addr; // AXI write address
-              read_sramd_addr <= 0;        // SRAM read starts at 0
+              read_sramd_addr <= 0;        // AXI write-back scans physical SRAM-D rows linearly
               m_awlen <= axi_lens;         // 32 transfers
 
               if (m_awvalid && m_awready)
@@ -223,6 +220,7 @@ always @(posedge aclk or negedge aresetn)
               if (row_count < max_rows && split_count < bursts_per_row)
                 begin
                   m_wvalid <= 1'b1;
+                  m_wlast  <= current_transfer_is_last;
                   case (mtype_sel)
                     M16N16K16:
                       begin
@@ -259,6 +257,7 @@ always @(posedge aclk or negedge aresetn)
               else
                 begin
                   m_wvalid <= 1'b0;
+                  m_wlast <= 1'b0;
                   m_wdata <= 0; // Beyond max rows
                 end
 
@@ -272,14 +271,14 @@ always @(posedge aclk or negedge aresetn)
                   if (split_count == bursts_per_row - 1)
                     begin
                       split_count <= 0;
-                      if (row_count < max_rows)
+                      if (row_count < max_rows - 1)
                         begin
-                          read_sramd_addr <= read_sramd_addr + 1;
+                          read_sramd_addr <= read_sramd_addr + 1'b1;
                           row_count <= row_count + 1;
                         end
                     end
                   // Reset on last transfer after handshake
-                  if (m_wlast && split_count == bursts_per_row - 1)
+                  if (current_transfer_is_last && split_count == bursts_per_row - 1)
                     begin
                       m_wlast <= 1'b0;
                       burst_cnt <= 'd0;
@@ -287,10 +286,6 @@ always @(posedge aclk or negedge aresetn)
                       row_count <= 'd0;
                     end
                 end
-
-              // Set last transfer flag
-              if (!m_wlast && burst_cnt == axi_lens)
-                m_wlast <= 1'b1;
 
             end
 

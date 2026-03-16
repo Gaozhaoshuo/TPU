@@ -24,6 +24,9 @@ reg mixed_precision;  // Mixed precision enable signal
 // Signals
 reg clk, rst_n;
 reg tpu_start;
+reg cmd_valid_i;
+wire cmd_ready_o;
+reg [127:0] cmd_data_i;
 reg pclk, presetn, psel, penable, pwrite;
 reg [6:0] pwdata;
 wire pready, pslverr;
@@ -82,6 +85,9 @@ tpu_top #(
     .clk(clk),
     .rst_n(rst_n),
     .tpu_start(tpu_start),
+    .cmd_valid_i(cmd_valid_i),
+    .cmd_ready_o(cmd_ready_o),
+    .cmd_data_i(cmd_data_i),
     .pclk(pclk),
     .presetn(presetn),
     .psel(psel),
@@ -141,37 +147,37 @@ initial begin
     case (dtype_sel)
         INT8_MODE: begin
             if(mixed_precision) begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8_int32/m16n16k16/matrix_a_int8.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8_int32/m16n16k16/matrix_b_int8.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8_int32/m16n16k16/matrix_c_int32.mem", matrix_C);
+                $readmemh("data/dataset/int8_int32/m16n16k16/matrix_a_int8.mem", matrix_A);
+                $readmemh("data/dataset/int8_int32/m16n16k16/matrix_b_int8.mem", matrix_B);
+                $readmemh("data/dataset/int8_int32/m16n16k16/matrix_c_int32.mem", matrix_C);
             end else begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8/m16n16k16/matrix_a_int8.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8/m16n16k16/matrix_b_int8.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8/m16n16k16/matrix_c_int8.mem", matrix_C); 
+                $readmemh("data/dataset/int8/m16n16k16/matrix_a_int8.mem", matrix_A);
+                $readmemh("data/dataset/int8/m16n16k16/matrix_b_int8.mem", matrix_B);
+                $readmemh("data/dataset/int8/m16n16k16/matrix_c_int8.mem", matrix_C); 
             end
         end
         INT4_MODE: begin
             if(mixed_precision) begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4_int32/m16n16k16/matrix_a_int4.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4_int32/m16n16k16/matrix_b_int4.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4_int32/m16n16k16/matrix_c_int32.mem", matrix_C);
+                $readmemh("data/dataset/int4_int32/m16n16k16/matrix_a_int4.mem", matrix_A);
+                $readmemh("data/dataset/int4_int32/m16n16k16/matrix_b_int4.mem", matrix_B);
+                $readmemh("data/dataset/int4_int32/m16n16k16/matrix_c_int32.mem", matrix_C);
             end else begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4/m16n16k16/matrix_a_int4.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4/m16n16k16/matrix_b_int4.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4/m16n16k16/matrix_c_int4.mem", matrix_C); 
+                $readmemh("data/dataset/int4/m16n16k16/matrix_a_int4.mem", matrix_A);
+                $readmemh("data/dataset/int4/m16n16k16/matrix_b_int4.mem", matrix_B);
+                $readmemh("data/dataset/int4/m16n16k16/matrix_c_int4.mem", matrix_C); 
             end
         end
         FP16_MODE: begin
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m16n16k16/matrix_a_fp16.mem", matrix_A);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m16n16k16/matrix_b_fp16.mem", matrix_B);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m16n16k16/matrix_c_fp16.mem", matrix_C);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m16n16k16/ref_result_fp16_m16n16k16.mem", ref_result_fp16);
+            $readmemh("data/dataset/fp16/m16n16k16/matrix_a_fp16.mem", matrix_A);
+            $readmemh("data/dataset/fp16/m16n16k16/matrix_b_fp16.mem", matrix_B);
+            $readmemh("data/dataset/fp16/m16n16k16/matrix_c_fp16.mem", matrix_C);
+            $readmemh("data/dataset/fp16/m16n16k16/ref_result_fp16_m16n16k16.mem", ref_result_fp16);
         end
         FP32_MODE: begin
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m16n16k16/matrix_a_fp32.mem", matrix_A);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m16n16k16/matrix_b_fp32.mem", matrix_B);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m16n16k16/matrix_c_fp32.mem", matrix_C);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m16n16k16/ref_result_fp32_m16n16k16.mem", ref_result_fp32);
+            $readmemh("data/dataset/fp32/m16n16k16/matrix_a_fp32.mem", matrix_A);
+            $readmemh("data/dataset/fp32/m16n16k16/matrix_b_fp32.mem", matrix_B);
+            $readmemh("data/dataset/fp32/m16n16k16/matrix_c_fp32.mem", matrix_C);
+            $readmemh("data/dataset/fp32/m16n16k16/ref_result_fp32_m16n16k16.mem", ref_result_fp32);
         end
     endcase
 
@@ -488,6 +494,7 @@ endtask
 // Test sequence
 initial begin
     tpu_start <= 0; psel <= 0; penable <= 0; pwrite <= 0; pwdata <= 7'b0;
+    cmd_valid_i <= 1'b0; cmd_data_i <= 128'd0;
     s_awvalid <= 0; s_awaddr <= 0; s_awlen <= 0; s_awburst <= 0;
     s_wvalid <= 0; s_wdata <= 0; s_wlast <= 0; s_bready <= 0;
     matrix_select <= 0; m_awready <= 1; m_wready <= 1;

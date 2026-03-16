@@ -24,6 +24,9 @@ reg mixed_precision;  // Mixed precision enable signal
 // Signals
 reg clk, rst_n;
 reg tpu_start;
+reg cmd_valid_i;
+wire cmd_ready_o;
+reg [127:0] cmd_data_i;
 reg pclk, presetn, psel, penable, pwrite;
 reg [6:0] pwdata;
 wire pready, pslverr;
@@ -82,6 +85,9 @@ tpu_top #(
     .clk(clk),
     .rst_n(rst_n),
     .tpu_start(tpu_start),
+    .cmd_valid_i(cmd_valid_i),
+    .cmd_ready_o(cmd_ready_o),
+    .cmd_data_i(cmd_data_i),
     .pclk(pclk),
     .presetn(presetn),
     .psel(psel),
@@ -124,6 +130,47 @@ initial begin
     clk <= 0; pclk <= 0;
     forever #5 begin clk <= ~clk; pclk <= ~pclk; end
 end
+
+`ifdef DEBUG_M32_TRACE
+initial begin
+    $dumpfile("reports/vcs/tb_tpu_top_m32n8k16/debug_m32.vcd");
+    $dumpvars(0, tb_tpu_top_m32n8k16);
+end
+
+always @(posedge clk) begin
+    if (rst_n) begin
+        if (tpu_top.sram_d_wen &&
+            (tpu_top.load_sramd_addr >= 5'd24 && tpu_top.load_sramd_addr <= 5'd31)) begin
+            $display("[DEBUG][SRAM_D_WRITE] t=%0t addr=%0d high_low=%0d data[31:0]=0x%08h",
+                     $time,
+                     tpu_top.load_sramd_addr,
+                     tpu_top.high_low_sel,
+                     tpu_top.sram_d_data_in[31:0]);
+        end
+
+        if (tpu_top.axi_master_inst.m_wvalid && tpu_top.axi_master_inst.m_wready &&
+            (tpu_top.axi_master_inst.read_sramd_addr >= 5'd24 && tpu_top.axi_master_inst.read_sramd_addr <= 5'd31)) begin
+            $display("[DEBUG][AXI_SEND] t=%0t row=%0d burst_cnt=%0d last=%0b data[31:0]=0x%08h",
+                     $time,
+                     tpu_top.axi_master_inst.read_sramd_addr,
+                     tpu_top.axi_master_inst.burst_cnt,
+                     tpu_top.axi_master_inst.m_wlast,
+                     tpu_top.axi_master_inst.m_wdata[31:0]);
+        end
+
+        if (tpu_top.axi_master_inst.state == 3'b011 &&
+            (tpu_top.axi_master_inst.read_sramd_addr >= 5'd24 && tpu_top.axi_master_inst.read_sramd_addr <= 5'd31)) begin
+            $display("[DEBUG][SRAM_D_READ] t=%0t row=%0d sram_d_addr=%0d sram_d_wen=%0b load_addr=%0d data_out[31:0]=0x%08h",
+                     $time,
+                     tpu_top.axi_master_inst.read_sramd_addr,
+                     tpu_top.sram_d_addr,
+                     tpu_top.sram_d_wen,
+                     tpu_top.load_sramd_addr,
+                     tpu_top.sram_d_data_out[31:0]);
+        end
+    end
+end
+`endif
 
 initial begin
     rst_n <= 0; presetn <= 0;
@@ -275,37 +322,37 @@ initial begin
     case (dtype_sel)
         INT8_MODE: begin
             if(mixed_precision) begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8_int32/m32n8k16/matrix_a_int8.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8_int32/m32n8k16/matrix_b_int8.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8_int32/m32n8k16/matrix_c_int32.mem", matrix_C);
+                $readmemh("data/dataset/int8_int32/m32n8k16/matrix_a_int8.mem", matrix_A);
+                $readmemh("data/dataset/int8_int32/m32n8k16/matrix_b_int8.mem", matrix_B);
+                $readmemh("data/dataset/int8_int32/m32n8k16/matrix_c_int32.mem", matrix_C);
             end else begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8/m32n8k16/matrix_a_int8.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8/m32n8k16/matrix_b_int8.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int8/m32n8k16/matrix_c_int8.mem", matrix_C); 
+                $readmemh("data/dataset/int8/m32n8k16/matrix_a_int8.mem", matrix_A);
+                $readmemh("data/dataset/int8/m32n8k16/matrix_b_int8.mem", matrix_B);
+                $readmemh("data/dataset/int8/m32n8k16/matrix_c_int8.mem", matrix_C); 
             end
         end
         INT4_MODE: begin
             if(mixed_precision) begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4_int32/m32n8k16/matrix_a_int4.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4_int32/m32n8k16/matrix_b_int4.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4_int32/m32n8k16/matrix_c_int32.mem", matrix_C);
+                $readmemh("data/dataset/int4_int32/m32n8k16/matrix_a_int4.mem", matrix_A);
+                $readmemh("data/dataset/int4_int32/m32n8k16/matrix_b_int4.mem", matrix_B);
+                $readmemh("data/dataset/int4_int32/m32n8k16/matrix_c_int32.mem", matrix_C);
             end else begin
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4/m32n8k16/matrix_a_int4.mem", matrix_A);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4/m32n8k16/matrix_b_int4.mem", matrix_B);
-                $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/int4/m32n8k16/matrix_c_int4.mem", matrix_C); 
+                $readmemh("data/dataset/int4/m32n8k16/matrix_a_int4.mem", matrix_A);
+                $readmemh("data/dataset/int4/m32n8k16/matrix_b_int4.mem", matrix_B);
+                $readmemh("data/dataset/int4/m32n8k16/matrix_c_int4.mem", matrix_C); 
             end
         end
         FP16_MODE: begin
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m32n8k16/matrix_a_fp16.mem", matrix_A);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m32n8k16/matrix_b_fp16.mem", matrix_B);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m32n8k16/matrix_c_fp16.mem", matrix_C);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp16/m32n8k16/ref_result_fp16_m32n8k16.mem", ref_result_fp16);
+            $readmemh("data/dataset/fp16/m32n8k16/matrix_a_fp16.mem", matrix_A);
+            $readmemh("data/dataset/fp16/m32n8k16/matrix_b_fp16.mem", matrix_B);
+            $readmemh("data/dataset/fp16/m32n8k16/matrix_c_fp16.mem", matrix_C);
+            $readmemh("data/dataset/fp16/m32n8k16/ref_result_fp16_m32n8k16.mem", ref_result_fp16);
         end
         FP32_MODE: begin
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m32n8k16/matrix_a_fp32.mem", matrix_A);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m32n8k16/matrix_b_fp32.mem", matrix_B);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m32n8k16/matrix_c_fp32.mem", matrix_C);
-            $readmemh("D:/FPGA/Prj/TPU/TPU/Dataset/fp32/m32n8k16/ref_result_fp32_m32n8k16.mem", ref_result_fp32);
+            $readmemh("data/dataset/fp32/m32n8k16/matrix_a_fp32.mem", matrix_A);
+            $readmemh("data/dataset/fp32/m32n8k16/matrix_b_fp32.mem", matrix_B);
+            $readmemh("data/dataset/fp32/m32n8k16/matrix_c_fp32.mem", matrix_C);
+            $readmemh("data/dataset/fp32/m32n8k16/ref_result_fp32_m32n8k16.mem", ref_result_fp32);
         end
     endcase
 
@@ -624,6 +671,7 @@ endtask
 // Test sequence
 initial begin
     tpu_start <= 0; psel <= 0; penable <= 0; pwrite <= 0; pwdata <= 7'b0;
+    cmd_valid_i <= 1'b0; cmd_data_i <= 128'd0;
     s_awvalid <= 0; s_awaddr <= 0; s_awlen <= 0; s_awburst <= 0;
     s_wvalid <= 0; s_wdata <= 0; s_wlast <= 0; s_bready <= 0;
     matrix_select <= 0; m_awready <= 1; m_wready <= 1;

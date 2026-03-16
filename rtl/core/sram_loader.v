@@ -22,6 +22,7 @@ module sram_loader #(
          output reg                               sram_b_wen_d2,         // Write enable for SRAMB (delayed)
          output reg                               sram_c_wen_d2,         // Write enable for SRAMC (delayed)
          output reg                               load_ab_done,          // SRAMA and SRAMB loading done signal
+         output reg                               load_done,             // A/B/C loading done signal
 
          // SRAM data transfer
          input  wire [MAX_DATA_SIZE*DATA_WIDTH-1:0]  share_sram_data_out,   // Data output from shared SRAM
@@ -29,19 +30,6 @@ module sram_loader #(
          output reg  [K_SIZE*DATA_WIDTH-1:0]      sram_b_data_in,        // Data input to SRAMB
          output reg  [MAX_DATA_SIZE*DATA_WIDTH-1:0]  sram_c_data_in         // Data input to SRAMC
        );
-
-// Matrix type definitions
-localparam m16n16k16 = 3'b001;  // m16n16k16: 16x16 matrix
-localparam m32n8k16  = 3'b010;  // m32n8k16:  32x8 matrix
-localparam m8n32k16  = 3'b100;  // m8n32k16:  8x32 matrix
-
-// Matrix size parameters
-localparam M_M16N16K16 = 6'd16; // Rows of matrix A for m16n16k16
-localparam N_M16N16K16 = 6'd16; // Columns of matrix B for m16n16k16
-localparam M_M32N8K16  = 6'd32; // Rows of matrix A for m32n8k16
-localparam N_M32N8K16  = 6'd8;  // Columns of matrix B for m32n8k16
-localparam M_M8N32K16  = 6'd8;  // Rows of matrix A for m8n32k16
-localparam N_M8N32K16  = 6'd32; // Columns of matrix B for m8n32k16
 
 // Shared SRAM address offset
 localparam OFF = 7'd32;
@@ -77,32 +65,37 @@ reg                              sram_b_wen;           // SRAMB write enable
 reg                              sram_b_wen_d1;        // SRAMB write enable (delayed 1 cycle)
 reg                              sram_c_wen;           // SRAMC write enable
 reg                              sram_c_wen_d1;        // SRAMC write enable (delayed 1 cycle)
+wire [15:0]                      shape_m;
+wire [15:0]                      shape_n;
+wire [15:0]                      shape_k;
+wire                             shape_valid;
+
+legacy_shape_codec u_legacy_shape_codec (
+                     .mtype_sel(mtype_sel),
+                     .m(shape_m),
+                     .n(shape_n),
+                     .k(shape_k),
+                     .mtype_valid(shape_valid),
+                     .decode_m(16'd0),
+                     .decode_n(16'd0),
+                     .decode_k(16'd0),
+                     .decoded_mtype_sel(),
+                     .mnk_valid()
+                   );
 
 // Dynamically select matrix dimensions
 always @(*)
   begin
-    case (mtype_sel)
-      m16n16k16:
-        begin
-          m_max = M_M16N16K16;
-          n_max = N_M16N16K16;
-        end
-      m32n8k16:
-        begin
-          m_max = M_M32N8K16;
-          n_max = N_M32N8K16;
-        end
-      m8n32k16:
-        begin
-          m_max = M_M8N32K16;
-          n_max = N_M8N32K16;
-        end
-      default:
-        begin
-          m_max = 'd0;
-          n_max = 'd0;
-        end
-    endcase
+    if (shape_valid)
+      begin
+        m_max = shape_m[5:0];
+        n_max = shape_n[5:0];
+      end
+    else
+      begin
+        m_max = 'd0;
+        n_max = 'd0;
+      end
   end
 
 // State transition
@@ -222,6 +215,7 @@ always @(posedge clk or negedge rst_n)
         sram_b_wen     <= 1'b0;
         sram_c_wen     <= 1'b0;
         load_ab_done   <= 1'b0;
+        load_done      <= 1'b0;
         sram_a_data_in <= 'd0;
         sram_b_data_in <= 'd0;
         sram_c_data_in <= 'd0;
@@ -248,7 +242,12 @@ always @(posedge clk or negedge rst_n)
             end
           LOAD_SHARE_SRAM_TO_SRAMC:
             begin
+              load_ab_done <= 1'b0;
               sram_c_wen <= 1'b1;
+            end
+          LOAD_C_DONE:
+            begin
+              load_done <= 1'b1;
             end
           default:
             begin
@@ -256,6 +255,7 @@ always @(posedge clk or negedge rst_n)
               sram_b_wen   <= 1'b0;
               sram_c_wen   <= 1'b0;
               load_ab_done <= 1'b0;
+              load_done    <= 1'b0;
             end
         endcase
       end

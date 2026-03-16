@@ -11,7 +11,8 @@ module systolic_controller #(
          input  wire                              rst_n,                 // Reset signal, active low
 
          // Control signals
-         input  wire                              tpu_start,             // Start computation signal, active high
+         input  wire                              tpu_start,             // Start GEMM signal, active high
+         input  wire                              dma_load_start,        // Start load-only command
          input  wire [2:0]                        mtype_sel,             // Matrix type selection signal
          input  wire [2:0]                        dtype_sel,             // Data type selection signal
          input  wire                              mixed_precision,       // Mixed precision control signal
@@ -42,7 +43,8 @@ module systolic_controller #(
          output reg                               tpu_busy,             // TPU busy signal
          output wire [1:0]                        high_low_sel,          // Data bit selection for SRAMD write-back
 
-         output reg                               tpu_done               // TPU computation done signal
+         output reg                               tpu_done,              // One-cycle pulse when compute pipeline reaches MAIN_DONE
+         output reg                               load_done              // One-cycle pulse when DMA_LOAD finishes loading A/B/C
        );
 
 // Matrix type definitions
@@ -50,63 +52,39 @@ localparam m16n16k16 = 3'b001;  // m16n16k16 matrix type
 localparam m32n8k16  = 3'b010;  // m32n8k16 matrix type
 localparam m8n32k16  = 3'b100;  // m8n32k16 matrix type
 
-// Main state machine states (3-bit wide)
-localparam MAIN_IDLE                  = 3'd0;  // Idle state
-localparam MAIN_START_LOAD_SRAM       = 3'd1;  // Start loading SRAM
-localparam MAIN_LOAD_SRAM             = 3'd2;  // Loading SRAM
-localparam MAIN_M16N16K16_COMPUTE     = 3'd3;  // M16N16K16 compute state
-localparam MAIN_M32N8K16_COMPUTE      = 3'd4;  // M32N8K16 compute state
-localparam MAIN_M8N32K16_COMPUTE      = 3'd5;  // M8N32K16 compute state
-localparam MAIN_DONE                  = 3'd6;  // Computation done state
+// Main state machine states
+localparam MAIN_IDLE            = 3'd0;  // Idle state
+localparam MAIN_START_LOAD_SRAM = 3'd1;  // Start loading SRAM
+localparam MAIN_LOAD_SRAM       = 3'd2;  // Loading SRAM
+localparam MAIN_COMPUTE         = 3'd3;  // Legacy 4-phase compute state
+localparam MAIN_DONE            = 3'd4;  // Computation done state
 
-// Sub-state machine states (5-bit wide)
-localparam SUB_IDLE                   = 5'd0;  // Sub-state idle
-// M16N16K16 load and compute states: A0-B0, A1-B0, A0-B1, A1-B1
-localparam SUB_START_M16N16K16_LOAD_A0_B0 = 5'd1;  // Start loading A0-B0
-localparam SUB_M16N16K16_MUL_A0_B0        = 5'd2;  // Compute A0-B0
-localparam SUB_START_M16N16K16_LOAD_A0_B1 = 5'd3;  // Start loading A0-B1
-localparam SUB_M16N16K16_MUL_A0_B1        = 5'd4;  // Compute A0-B1
-localparam SUB_START_M16N16K16_LOAD_A1_B0 = 5'd5;  // Start loading A1-B0
-localparam SUB_M16N16K16_MUL_A1_B0        = 5'd6;  // Compute A1-B0
-localparam SUB_START_M16N16K16_LOAD_A1_B1 = 5'd7;  // Start loading A1-B1
-localparam SUB_M16N16K16_MUL_A1_B1        = 5'd8;  // Compute A1-B1
-// M32N8K16 load and compute states: A0-B, A1-B, A2-B, A3-B
-localparam SUB_START_M32N8K16_LOAD_A0_B   = 5'd9;  // Start loading A0-B
-localparam SUB_M32N8K16_MUL_A0_B          = 5'd10; // Compute A0-B
-localparam SUB_START_M32N8K16_LOAD_A1_B   = 5'd11; // Start loading A1-B
-localparam SUB_M32N8K16_MUL_A1_B          = 5'd12; // Compute A1-B
-localparam SUB_START_M32N8K16_LOAD_A2_B   = 5'd13; // Start loading A2-B
-localparam SUB_M32N8K16_MUL_A2_B          = 5'd14; // Compute A2-B
-localparam SUB_START_M32N8K16_LOAD_A3_B   = 5'd15; // Start loading A3-B
-localparam SUB_M32N8K16_MUL_A3_B          = 5'd16; // Compute A3-B
-// M8N32K16 load and compute states: A-B0, A-B1, A-B2, A-B3
-localparam SUB_START_M8N32K16_LOAD_A_B0   = 5'd17; // Start loading A-B0
-localparam SUB_M8N32K16_MUL_A_B0          = 5'd18; // Compute A-B0
-localparam SUB_START_M8N32K16_LOAD_A_B1   = 5'd19; // Start loading A-B1
-localparam SUB_M8N32K16_MUL_A_B1          = 5'd20; // Compute A-B1
-localparam SUB_START_M8N32K16_LOAD_A_B2   = 5'd21; // Start loading A-B2
-localparam SUB_M8N32K16_MUL_A_B2          = 5'd22; // Compute A-B2
-localparam SUB_START_M8N32K16_LOAD_A_B3   = 5'd23; // Start loading A-B3
-localparam SUB_M8N32K16_MUL_A_B3          = 5'd24; // Compute A-B3
-localparam SUB_WAIT1                      = 5'd25; // Wait state 1
+// Sub-state machine states
+localparam SUB_IDLE        = 2'd0;  // Sub-state idle
+localparam SUB_START_PHASE = 2'd1;  // Start one compute phase
+localparam SUB_MUL_PHASE   = 2'd2;  // Wait for the active phase to finish
 
 // State machine registers
 reg [2:0] current_main_state;  // Current main state (3-bit)
 reg [2:0] next_main_state;     // Next main state (3-bit)
-reg [4:0] current_sub_state;   // Current sub-state (5-bit)
-reg [4:0] next_sub_state;      // Next sub-state (5-bit)
+reg [1:0] current_sub_state;   // Current sub-state
+reg [1:0] next_sub_state;      // Next sub-state
+reg [1:0] current_phase_idx;   // Current legacy phase: 0..3
+reg [1:0] next_phase_idx;      // Next legacy phase
 
 // sram_loader internal signals
 reg        load_sram_start;    // SRAM load start signal
 wire       load_ab_done;       // SRAMA and SRAMB load done signal
+wire       sram_load_done;     // SRAMA/B/C loading done signal
 wire       mul_done;           // Multiplication done signal
 reg        compute;            // Compute start signal
+wire       legacy_mtype_valid;
+reg        load_only_mode;
+reg        next_load_only_mode;
 
 
-// systolic_input_loader internal signals
-reg [3:0]  load_systolic_input_start_m16n16k16;  // Start signal for m16n16k16
-reg [3:0]  load_systolic_input_start_m32n8k16;   // Start signal for m32n8k16
-reg [3:0]  load_systolic_input_start_m8n32k16;   // Start signal for m8n32k16
+// systolic_input_loader internal signal
+reg [3:0]  load_systolic_input_start;  // One-hot phase start for the current legacy shape
 
 // Internal connection signals
 wire [SYS_ARRAY_SIZE-1:0]                          load_en_row;         // Row load enable
@@ -122,6 +100,10 @@ wire [SYS_ARRAY_SIZE*DATA_WIDTH-1:0] sys_outcome_row;  // System outcome row
 wire                              c_valid;             // C matrix valid
 wire [SYS_ARRAY_SIZE*DATA_WIDTH-1:0] c_row;            // C matrix row
 wire                              compute_done;          // Computation done signal
+
+assign legacy_mtype_valid = (mtype_sel == m16n16k16) ||
+                            (mtype_sel == m32n8k16)  ||
+                            (mtype_sel == m8n32k16);
 // Instantiate sram_loader
 sram_loader #(
               .K_SIZE               (K_SIZE),
@@ -142,6 +124,7 @@ sram_loader #(
               .sram_b_wen_d2        (sram_b_wen),
               .sram_c_wen_d2        (sram_c_wen),
               .load_ab_done         (load_ab_done),
+              .load_done            (sram_load_done),
               .share_sram_data_out  (share_sram_data_out),
               .sram_a_data_in       (sram_a_data_in),
               .sram_b_data_in       (sram_b_data_in),
@@ -157,9 +140,8 @@ systolic_input_loader #(
                       ) u_systolic_input_loader (
                         .clk                     (clk),
                         .rst_n                   (rst_n),
-                        .load_systolic_input_start_m16n16k16 (load_systolic_input_start_m16n16k16),
-                        .load_systolic_input_start_m32n8k16  (load_systolic_input_start_m32n8k16),
-                        .load_systolic_input_start_m8n32k16  (load_systolic_input_start_m8n32k16),
+                        .mtype_sel                (mtype_sel),
+                        .load_systolic_input_start(load_systolic_input_start),
                         .read_srama_addr         (read_srama_addr),
                         .read_sramb_addr         (read_sramb_addr),
                         .load_en_row             (load_en_row),
@@ -253,23 +235,34 @@ always @(posedge clk or negedge rst_n)
       begin
         current_main_state <= MAIN_IDLE;
         current_sub_state  <= SUB_IDLE;
+        current_phase_idx  <= 2'd0;
+        load_only_mode     <= 1'b0;
       end
     else
       begin
         current_main_state <= next_main_state;
         current_sub_state  <= next_sub_state;
+        current_phase_idx  <= next_phase_idx;
+        load_only_mode     <= next_load_only_mode;
       end
   end
 
 // Next state logic
 always @(*)
   begin
+    next_main_state = current_main_state;
+    next_sub_state  = current_sub_state;
+    next_phase_idx  = current_phase_idx;
+    next_load_only_mode = load_only_mode;
+
     case (current_main_state)
       MAIN_IDLE:
         begin
           next_sub_state  = SUB_IDLE;
-          if (tpu_start)
+          next_phase_idx  = 2'd0;
+          if (tpu_start || dma_load_start)
             begin
+              next_load_only_mode = dma_load_start;
               next_main_state = MAIN_START_LOAD_SRAM;
             end
           else
@@ -280,188 +273,80 @@ always @(*)
       MAIN_START_LOAD_SRAM:
         begin
           next_sub_state  = SUB_IDLE;
+          next_phase_idx  = 2'd0;
+          next_load_only_mode = load_only_mode;
           next_main_state = MAIN_LOAD_SRAM;
         end
       MAIN_LOAD_SRAM:
         begin
           next_sub_state  = SUB_IDLE;
-          if (load_ab_done)
+          next_phase_idx  = 2'd0;
+          if (load_only_mode)
             begin
-              case (mtype_sel)
-                m16n16k16:
-                  next_main_state = MAIN_M16N16K16_COMPUTE;
-                m32n8k16:
-                  next_main_state = MAIN_M32N8K16_COMPUTE;
-                m8n32k16:
-                  next_main_state = MAIN_M8N32K16_COMPUTE;
-                default:
-                  next_main_state = MAIN_IDLE;
-              endcase
+              if (sram_load_done)
+                begin
+                  next_main_state = MAIN_DONE;
+                end
+              else
+                begin
+                  next_main_state = MAIN_LOAD_SRAM;
+                end
+            end
+          else if (load_ab_done)
+            begin
+              next_main_state = legacy_mtype_valid ? MAIN_COMPUTE : MAIN_IDLE;
             end
           else
             begin
               next_main_state = MAIN_LOAD_SRAM;
             end
         end
-      MAIN_M16N16K16_COMPUTE:
+      MAIN_COMPUTE:
         begin
-          next_main_state = MAIN_M16N16K16_COMPUTE;
           case (current_sub_state)
             SUB_IDLE:
-              next_sub_state = SUB_START_M16N16K16_LOAD_A0_B0;
-            SUB_START_M16N16K16_LOAD_A0_B0:
-              next_sub_state = SUB_M16N16K16_MUL_A0_B0;
-            SUB_M16N16K16_MUL_A0_B0:
               begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M16N16K16_LOAD_A0_B1;
-                else
-                  next_sub_state = SUB_M16N16K16_MUL_A0_B0;
+                next_phase_idx = 2'd0;
+                next_sub_state = SUB_START_PHASE;
               end
-            SUB_START_M16N16K16_LOAD_A0_B1:
-              next_sub_state = SUB_M16N16K16_MUL_A0_B1;
-            SUB_M16N16K16_MUL_A0_B1:
+            SUB_START_PHASE:
               begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M16N16K16_LOAD_A1_B0;
-                else
-                  next_sub_state = SUB_M16N16K16_MUL_A0_B1;
+                next_sub_state = SUB_MUL_PHASE;
               end
-            SUB_START_M16N16K16_LOAD_A1_B0:
-              next_sub_state = SUB_M16N16K16_MUL_A1_B0;
-            SUB_M16N16K16_MUL_A1_B0:
+            SUB_MUL_PHASE:
               begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M16N16K16_LOAD_A1_B1;
-                else
-                  next_sub_state = SUB_M16N16K16_MUL_A1_B0;
-              end
-            SUB_START_M16N16K16_LOAD_A1_B1:
-              next_sub_state = SUB_M16N16K16_MUL_A1_B1;
-            SUB_M16N16K16_MUL_A1_B1:
-              begin
-                if (compute_done)
+                if (current_phase_idx == 2'd3)
                   begin
-                    next_sub_state  = SUB_IDLE;
-                    next_main_state = MAIN_DONE;
+                    if (compute_done)
+                      begin
+                        next_sub_state  = SUB_IDLE;
+                        next_phase_idx  = 2'd0;
+                        next_load_only_mode = 1'b0;
+                        next_main_state = MAIN_DONE;
+                      end
+                    else
+                      begin
+                        next_sub_state = SUB_MUL_PHASE;
+                      end
                   end
                 else
                   begin
-                    next_sub_state = SUB_M16N16K16_MUL_A1_B1;
+                    if (mul_done)
+                      begin
+                        next_phase_idx = current_phase_idx + 1'b1;
+                        next_sub_state = SUB_START_PHASE;
+                      end
+                    else
+                      begin
+                        next_sub_state = SUB_MUL_PHASE;
+                      end
                   end
               end
             default:
               begin
                 next_main_state = MAIN_IDLE;
                 next_sub_state  = SUB_IDLE;
-              end
-          endcase
-        end
-      MAIN_M32N8K16_COMPUTE:
-        begin
-          next_main_state = MAIN_M32N8K16_COMPUTE;
-          case (current_sub_state)
-            SUB_IDLE:
-              next_sub_state = SUB_START_M32N8K16_LOAD_A0_B;
-            SUB_START_M32N8K16_LOAD_A0_B:
-              next_sub_state = SUB_M32N8K16_MUL_A0_B;
-            SUB_M32N8K16_MUL_A0_B:
-              begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M32N8K16_LOAD_A1_B;
-                else
-                  next_sub_state = SUB_M32N8K16_MUL_A0_B;
-              end
-            SUB_START_M32N8K16_LOAD_A1_B:
-              next_sub_state = SUB_M32N8K16_MUL_A1_B;
-            SUB_M32N8K16_MUL_A1_B:
-              begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M32N8K16_LOAD_A2_B;
-                else
-                  next_sub_state = SUB_M32N8K16_MUL_A1_B;
-              end
-            SUB_START_M32N8K16_LOAD_A2_B:
-              next_sub_state = SUB_M32N8K16_MUL_A2_B;
-            SUB_M32N8K16_MUL_A2_B:
-              begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M32N8K16_LOAD_A3_B;
-                else
-                  next_sub_state = SUB_M32N8K16_MUL_A2_B;
-              end
-            SUB_START_M32N8K16_LOAD_A3_B:
-              next_sub_state = SUB_M32N8K16_MUL_A3_B;
-            SUB_M32N8K16_MUL_A3_B:
-              begin
-                if (compute_done)
-                  begin
-                    next_sub_state  = SUB_IDLE;
-                    next_main_state = MAIN_DONE;
-                  end
-                else
-                  begin
-                    next_sub_state = SUB_M32N8K16_MUL_A3_B;
-                  end
-              end
-            default:
-              begin
-                next_main_state = MAIN_IDLE;
-                next_sub_state  = SUB_IDLE;
-              end
-          endcase
-        end
-      MAIN_M8N32K16_COMPUTE:
-        begin
-          next_main_state = MAIN_M8N32K16_COMPUTE;
-          case (current_sub_state)
-            SUB_IDLE:
-              next_sub_state = SUB_START_M8N32K16_LOAD_A_B0;
-            SUB_START_M8N32K16_LOAD_A_B0:
-              next_sub_state = SUB_M8N32K16_MUL_A_B0;
-            SUB_M8N32K16_MUL_A_B0:
-              begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M8N32K16_LOAD_A_B1;
-                else
-                  next_sub_state = SUB_M8N32K16_MUL_A_B0;
-              end
-            SUB_START_M8N32K16_LOAD_A_B1:
-              next_sub_state = SUB_M8N32K16_MUL_A_B1;
-            SUB_M8N32K16_MUL_A_B1:
-              begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M8N32K16_LOAD_A_B2;
-                else
-                  next_sub_state = SUB_M8N32K16_MUL_A_B1;
-              end
-            SUB_START_M8N32K16_LOAD_A_B2:
-              next_sub_state = SUB_M8N32K16_MUL_A_B2;
-            SUB_M8N32K16_MUL_A_B2:
-              begin
-                if (mul_done)
-                  next_sub_state = SUB_START_M8N32K16_LOAD_A_B3;
-                else
-                  next_sub_state = SUB_M8N32K16_MUL_A_B2;
-              end
-            SUB_START_M8N32K16_LOAD_A_B3:
-              next_sub_state = SUB_M8N32K16_MUL_A_B3;
-            SUB_M8N32K16_MUL_A_B3:
-              begin
-                if (compute_done)
-                  begin
-                    next_sub_state  = SUB_IDLE;
-                    next_main_state = MAIN_DONE;
-                  end
-                else
-                  begin
-                    next_sub_state = SUB_M8N32K16_MUL_A_B3;
-                  end
-              end
-            default:
-              begin
-                next_main_state = MAIN_IDLE;
-                next_sub_state  = SUB_IDLE;
+                next_phase_idx  = 2'd0;
               end
           endcase
         end
@@ -469,11 +354,15 @@ always @(*)
         begin
           next_main_state = MAIN_IDLE;
           next_sub_state  = SUB_IDLE;
+          next_phase_idx  = 2'd0;
+          next_load_only_mode = 1'b0;
         end
       default:
         begin
           next_main_state = MAIN_IDLE;
           next_sub_state  = SUB_IDLE;
+          next_phase_idx  = 2'd0;
+          next_load_only_mode = 1'b0;
         end
     endcase
   end
@@ -483,12 +372,11 @@ always @(*)
   begin
     // Default values
     load_sram_start           = 1'b0;
-    load_systolic_input_start_m16n16k16 = 'd0;
-    load_systolic_input_start_m32n8k16  = 'd0;
-    load_systolic_input_start_m8n32k16  = 'd0;
+    load_systolic_input_start = 'd0;
     compute                  = 1'b0;
     tpu_busy                 = 1'b0;
     tpu_done                 = 1'b0;
+    load_done                = 1'b0;
     case (current_main_state)
       MAIN_START_LOAD_SRAM:
         begin
@@ -500,62 +388,21 @@ always @(*)
           tpu_busy        = 1'b1;
           load_sram_start = 1'b0;
         end
-      MAIN_M16N16K16_COMPUTE:
+      MAIN_COMPUTE:
         begin
           tpu_busy = 1'b1;
           compute  = 1'b1;
-          case (current_sub_state)
-            SUB_START_M16N16K16_LOAD_A0_B0:
-              load_systolic_input_start_m16n16k16 = 4'b0001;
-            SUB_START_M16N16K16_LOAD_A0_B1:
-              load_systolic_input_start_m16n16k16 = 4'b0010;
-            SUB_START_M16N16K16_LOAD_A1_B0:
-              load_systolic_input_start_m16n16k16 = 4'b0100;
-            SUB_START_M16N16K16_LOAD_A1_B1:
-              load_systolic_input_start_m16n16k16 = 4'b1000;
-            default:
-              load_systolic_input_start_m16n16k16 = 4'b0000;
-          endcase
-        end
-      MAIN_M32N8K16_COMPUTE:
-        begin
-          tpu_busy = 1'b1;
-          compute  = 1'b1;
-          case (current_sub_state)
-            SUB_START_M32N8K16_LOAD_A0_B:
-              load_systolic_input_start_m32n8k16 = 4'b0001;
-            SUB_START_M32N8K16_LOAD_A1_B:
-              load_systolic_input_start_m32n8k16 = 4'b0010;
-            SUB_START_M32N8K16_LOAD_A2_B:
-              load_systolic_input_start_m32n8k16 = 4'b0100;
-            SUB_START_M32N8K16_LOAD_A3_B:
-              load_systolic_input_start_m32n8k16 = 4'b1000;
-            default:
-              load_systolic_input_start_m32n8k16 = 4'b0000;
-          endcase
-        end
-      MAIN_M8N32K16_COMPUTE:
-        begin
-          tpu_busy = 1'b1;
-          compute  = 1'b1;
-          case (current_sub_state)
-            SUB_START_M8N32K16_LOAD_A_B0:
-              load_systolic_input_start_m8n32k16 = 4'b0001;
-            SUB_START_M8N32K16_LOAD_A_B1:
-              load_systolic_input_start_m8n32k16 = 4'b0010;
-            SUB_START_M8N32K16_LOAD_A_B2:
-              load_systolic_input_start_m8n32k16 = 4'b0100;
-            SUB_START_M8N32K16_LOAD_A_B3:
-              load_systolic_input_start_m8n32k16 = 4'b1000;
-            default:
-              load_systolic_input_start_m8n32k16 = 4'b0000;
-          endcase
+          if (current_sub_state == SUB_START_PHASE)
+            begin
+              load_systolic_input_start = (4'b0001 << current_phase_idx);
+            end
         end
       MAIN_DONE:
         begin
           compute  = 1'b0;
           tpu_busy = 1'b0;
-          tpu_done = 1'b1;
+          tpu_done = ~load_only_mode;
+          load_done = load_only_mode;
         end
     endcase
   end

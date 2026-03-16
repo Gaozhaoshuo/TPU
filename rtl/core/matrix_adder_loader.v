@@ -26,13 +26,7 @@ module matrix_adder_loader #(
          input  wire [2:0]                       mtype_sel           // 矩阵类型选择信号
        );
 
-// 矩阵类型定义
-localparam m16n16k16 = 3'b001;  // m16n16k16 矩阵类型
-localparam m32n8k16  = 3'b010;  // m32n8k16 矩阵类型
-localparam m8n32k16  = 3'b100;  // m8n32k16 矩阵类型
-
 localparam ROW_COUNT_MAX  = 32; // 最大输出行数
-localparam ROWS_PER_GROUP = 8;  // 每组行数
 
 // 内部寄存器
 reg [4:0]                           counter;            // 计数器，用于生成读地址
@@ -40,6 +34,22 @@ reg                                 sys_outcome_valid_d1, sys_outcome_valid_d2; 
 reg [SYS_ARRAY_SIZE*DATA_WIDTH-1:0] sys_outcome_d1, sys_outcome_d2; // 延迟一级的结果数据
 reg                                 c_valid_d0, c_valid_d1;         // 延迟一级的 C 有效信号
 reg [1:0]                           high_low_sel,high_low_sel_d;       // 数据位选信号，用于掩码选择
+wire [SRAM_ADDR_WIDTH-1:0]          mapped_read_addr;
+wire [1:0]                          mapped_high_low_sel;
+wire [2:0]                          unused_bursts_per_row;
+wire [5:0]                          unused_max_rows;
+
+legacy_shape_mapper #(
+         .SRAM_ADDR_WIDTH(SRAM_ADDR_WIDTH),
+         .ROW_INDEX_WIDTH(6)
+       ) u_legacy_shape_mapper (
+         .mtype_sel(mtype_sel),
+         .logical_row_idx({1'b0, counter}),
+         .mapped_addr(mapped_read_addr),
+         .seg_sel(mapped_high_low_sel),
+         .bursts_per_row(unused_bursts_per_row),
+         .max_rows(unused_max_rows)
+       );
 
 
 // 地址和控制逻辑
@@ -67,79 +77,8 @@ always @(posedge clk or negedge rst_n)
               end
             c_valid_d0 <= 1'b1;
 
-            // 根据矩阵类型生成读地址，与 matrix_adder 的写回地址逻辑保持一致
-            case (mtype_sel)
-              m16n16k16:
-                begin
-                  if (counter < ROWS_PER_GROUP)
-                    begin
-                      // A0xB0 读取地址 0~7，数据位 0~255
-                      read_sramc_addr <= counter;
-                      high_low_sel <= 2'b00;
-                    end
-                  else if (counter < 2 * ROWS_PER_GROUP)
-                    begin
-                      // A0xB1 读取地址 0~7，数据位 256~511
-                      read_sramc_addr <= counter - ROWS_PER_GROUP;
-                      high_low_sel <= 2'b01;
-                    end
-                  else if (counter < 3 * ROWS_PER_GROUP)
-                    begin
-                      // A1xB0 读取地址 8~15，数据位 0~255
-                      read_sramc_addr <= counter - ROWS_PER_GROUP;
-                      high_low_sel <= 2'b00;
-                    end
-                  else if (counter < 4 * ROWS_PER_GROUP)
-                    begin
-                      // A1xB1 读取地址 8~15，数据位 256~511
-                      read_sramc_addr <= counter - 2 * ROWS_PER_GROUP;
-                      high_low_sel <= 2'b01;
-                    end
-                  else
-                    begin
-                      read_sramc_addr <= 0;
-                      high_low_sel <= 2'b00;
-                    end
-                end
-              m32n8k16:
-                begin
-                  read_sramc_addr <= counter;
-                  high_low_sel <= 2'b00;  // 数据位 0~255
-                end
-              m8n32k16:
-                begin
-                  read_sramc_addr <= counter & 5'b00111;  // counter % 8
-                  if (counter < ROWS_PER_GROUP)
-                    begin
-                      // AxB0 读取地址 0~7，数据位 0~255
-                      high_low_sel <= 2'b00;
-                    end
-                  else if (counter < 2 * ROWS_PER_GROUP)
-                    begin
-                      // AxB1 读取地址 0~7，数据位 256~511
-                      high_low_sel <= 2'b01;
-                    end
-                  else if (counter < 3 * ROWS_PER_GROUP)
-                    begin
-                      // AxB2 读取地址 0~7，数据位 512~767
-                      high_low_sel <= 2'b10;
-                    end
-                  else if (counter < 4 * ROWS_PER_GROUP)
-                    begin
-                      // AxB3 读取地址 0~7，数据位 768~1023
-                      high_low_sel <= 2'b11;
-                    end
-                  else
-                    begin
-                      high_low_sel <= 2'b00;
-                    end
-                end
-              default:
-                begin
-                  read_sramc_addr <= 'd0;
-                  high_low_sel <= 2'b00;
-                end
-            endcase
+            read_sramc_addr <= mapped_read_addr;
+            high_low_sel    <= mapped_high_low_sel;
           end
         else
           begin
